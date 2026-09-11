@@ -1,8 +1,8 @@
 import React, { useState } from "react";
-import { scanUrl, scanEmail, scanBulk } from "./api";
+import { scanUrl, scanBulk } from "./api";
 
 export default function App() {
-  const [tab, setTab] = useState("url"); // "url" | "email" | "bulk"
+  const [tab, setTab] = useState("url"); // "url" | "bulk"
   const [darkMode, setDarkMode] = useState(true);
 
   return (
@@ -15,7 +15,6 @@ export default function App() {
           </button>
         </div>
         <h1>🛡️ Phishing Website Detection Tool</h1>
-        <p>AI-Powered URL &amp; Email Security Scanner</p>
       </header>
 
       <nav className="tabs">
@@ -24,12 +23,6 @@ export default function App() {
           onClick={() => setTab("url")}
         >
           URL Scanner
-        </button>
-        <button
-          className={tab === "email" ? "tab active" : "tab"}
-          onClick={() => setTab("email")}
-        >
-          Email Detector
         </button>
         <button
           className={tab === "bulk" ? "tab active" : "tab"}
@@ -41,14 +34,8 @@ export default function App() {
 
       <main className="content">
         {tab === "url" && <UrlScanner />}
-        {tab === "email" && <EmailScanner />}
         {tab === "bulk" && <BulkScanner />}
       </main>
-
-      {/* ------------------------------------------------------------
-          FUTURE FEATURES: add more tabs/pages here later, e.g.
-            <button onClick={() => setTab("history")}>Scan History</button>
-         ------------------------------------------------------------ */}
     </div>
   );
 }
@@ -79,6 +66,71 @@ function ExtraChecks({ result }) {
           ? `⚠️ Looks like a fake "${result.typosquatting.matched_brand}"`
           : "✅ No brand impersonation detected"}
       </div>
+    </div>
+  );
+}
+
+// Component to render DOM Structural Analysis with refined severity indicators
+function DomInspector({ domData }) {
+  if (!domData) return null;
+
+  return (
+    <div style={{
+      marginTop: '20px',
+      padding: '18px',
+      backgroundColor: '#1e293b',
+      borderRadius: '8px',
+      border: '1px solid #334155',
+      color: '#f8fafc',
+      textAlign: 'left'
+    }}>
+      <h3 style={{ color: '#38bdf8', marginTop: 0, marginBottom: '12px', fontSize: '1.1rem' }}>
+        🔍 Real-Time DOM & Web Structural Inspector
+      </h3>
+
+      <div style={{ marginBottom: '8px' }}>
+        <strong>Scraped Webpage Title: </strong>
+        <span style={{ color: '#cbd5e1' }}>{domData.scraped_title || "N/A"}</span>
+      </div>
+
+      {/* Neutral informational indicator for presence of a login form */}
+      <div style={{ marginBottom: '8px' }}>
+        <strong>Login Form: </strong>
+        {domData.has_login_form ? (
+          <span style={{ color: '#38bdf8' }}>ℹ️ Detected (Password Input Present)</span>
+        ) : (
+          <span style={{ color: '#22c55e' }}>✅ None Found</span>
+        )}
+      </div>
+
+      {/* High-severity alert section reserved for genuine security violations */}
+      {domData.dom_alerts && domData.dom_alerts.length > 0 ? (
+        <div style={{
+          marginTop: '12px',
+          padding: '10px 14px',
+          backgroundColor: 'rgba(239, 68, 68, 0.12)',
+          borderRadius: '6px',
+          borderLeft: '4px solid #ef4444'
+        }}>
+          <strong style={{ color: '#f87171' }}>⚠️ Security Violations Flagged:</strong>
+          <ul style={{ margin: '6px 0 0 0', paddingLeft: '20px', color: '#fca5a5' }}>
+            {domData.dom_alerts.map((alert, idx) => (
+              <li key={idx}>{alert}</li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <div style={{
+          marginTop: '12px',
+          padding: '10px 14px',
+          backgroundColor: 'rgba(34, 197, 94, 0.12)',
+          borderRadius: '6px',
+          borderLeft: '4px solid #22c55e',
+          color: '#4ade80'
+        }}>
+          ✅ No brand impersonation, cross-domain credential harvesting, or malicious tags detected.
+        </div>
+      )}
     </div>
   );
 }
@@ -137,70 +189,13 @@ function UrlScanner() {
 
           <ExtraChecks result={result} />
 
-          <details>
-            <summary>Extracted features</summary>
+          {/* New DOM Inspector Output Component */}
+          <DomInspector domData={result.dom_inspection} />
+
+          <details style={{ marginTop: '15px' }}>
+            <summary>Extracted ML features</summary>
             <pre>{JSON.stringify(result.features, null, 2)}</pre>
           </details>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function EmailScanner() {
-  const [text, setText] = useState("");
-  const [result, setResult] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  const handleScan = async () => {
-    if (!text.trim()) return;
-    setLoading(true);
-    setError("");
-    setResult(null);
-    try {
-      const data = await scanEmail(text.trim());
-      setResult(data);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="card">
-      <h2>Scan an Email</h2>
-      <textarea
-        rows={6}
-        placeholder="Paste email text here..."
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-      />
-      <button onClick={handleScan} disabled={loading}>
-        {loading ? "Scanning..." : "Scan Email"}
-      </button>
-
-      {error && <p className="error">{error}</p>}
-
-      {result && (
-        <div className={`result ${result.is_phishing ? "danger" : "safe"}`}>
-          <p>
-            <strong>Verdict:</strong>{" "}
-            {result.is_phishing ? "Phishing" : "Safe"}
-          </p>
-          <p>
-            <strong>Confidence:</strong> {result.confidence}%
-          </p>
-          <p>
-            <strong>Risk Level:</strong> {result.risk_level}
-          </p>
-          {result.matched_keywords?.length > 0 && (
-            <p>
-              <strong>Matched keywords:</strong>{" "}
-              {result.matched_keywords.join(", ")}
-            </p>
-          )}
         </div>
       )}
     </div>

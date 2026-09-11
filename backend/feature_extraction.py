@@ -7,12 +7,12 @@ to classify a URL as phishing or safe.
 Features:
 1. url_length        -> total length of the URL
 2. has_https         -> 1 if URL uses HTTPS, else 0
-3. has_at_symbol      -> 1 if '@' appears in the URL, else 0
-4. has_ip             -> 1 if the domain is a raw IP address, else 0
-5. dot_count          -> number of '.' characters in the URL
-6. hyphen_count       -> number of '-' characters in the URL
-7. domain_length      -> length of the domain portion
-8. has_subdomain      -> 1 if there is more than one subdomain level
+3. has_at_symbol     -> 1 if '@' appears in the URL, else 0
+4. has_ip            -> 1 if the domain is a raw IP address, else 0
+5. dot_count         -> number of '.' characters in the URL
+6. hyphen_count      -> number of '-' characters in the URL
+7. domain_length     -> length of the domain portion
+8. has_subdomain     -> 1 if there is more than one subdomain level
 """
 
 import re
@@ -24,6 +24,21 @@ def _get_domain(url: str) -> str:
     try:
         parsed = urlparse(url if "://" in url else "http://" + url)
         return parsed.netloc
+    except Exception:
+        return ""
+
+
+def _get_clean_domain(url: str) -> str:
+    """Extract and clean domain for accurate subdomain evaluation."""
+    try:
+        parsed = urlparse(url if "://" in url else "http://" + url)
+        domain = parsed.netloc.lower()
+        # Remove port if present
+        domain = domain.split(":")[0]
+        # Ignore leading 'www.' so root domain checks remain consistent
+        if domain.startswith("www."):
+            domain = domain[4:]
+        return domain
     except Exception:
         return ""
 
@@ -42,17 +57,22 @@ def extract_features(url: str) -> dict:
     and for a single live prediction from the Flask API.
     """
     url = url.strip()
-    domain = _get_domain(url)
+    raw_domain = _get_domain(url)
+    clean_domain = _get_clean_domain(url)
+
+    # A standard root domain (e.g., facebook.com) has 1 dot in clean_domain -> has_subdomain = 0
+    # True subdomains (e.g., m.facebook.com) have > 1 dot -> has_subdomain = 1
+    has_subdomain = 1 if clean_domain.count(".") > 1 else 0
 
     features = {
         "url_length": len(url),
         "has_https": 1 if url.lower().startswith("https://") else 0,
         "has_at_symbol": 1 if "@" in url else 0,
-        "has_ip": 1 if _is_ip_address(domain) else 0,
+        "has_ip": 1 if _is_ip_address(raw_domain) else 0,
         "dot_count": url.count("."),
         "hyphen_count": url.count("-"),
-        "domain_length": len(domain),
-        "has_subdomain": 1 if domain.count(".") > 1 else 0,
+        "domain_length": len(raw_domain),
+        "has_subdomain": has_subdomain,
     }
     return features
 

@@ -1,24 +1,15 @@
 """
-Phishing Website Detection Tool — Backend (FYP Skeleton)
-----------------------------------------------------------
-Flask REST API that serves the Random Forest phishing-URL model.
-
-Endpoints:
-    GET  /health         -> simple health check
-    POST /scan            -> { "url": "..." }        -> prediction + confidence
-                              + domain age, SSL check, typosquat check
-    POST /scan-bulk        -> { "urls": [...] }        -> /scan result for each URL
-    POST /scan-email      -> { "email_text": "..." } -> basic keyword-based check
-
-Run:
-    pip install -r requirements.txt
-    python model/train_model.py      # trains and saves model.pkl (run once)
-    python app.py                    # starts the API on http://localhost:5000
+Phishing Website Detection Tool — Backend
+------------------------------------------
+Handles Single & Bulk Scans across all common frontend routes.
 """
 
 import os
+import re
 from urllib.parse import urlparse
 import joblib
+import requests
+from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
@@ -27,148 +18,211 @@ from domain_age import check_domain_age
 from ssl_check import check_ssl_certificate
 from typosquat_check import check_typosquatting
 
+TOP_DOMAINS = [
+    'facebook.com', 'google.com', 'youtube.com', 'instagram.com', 
+    'twitter.com', 'x.com', 'linkedin.com', 'github.com', 'microsoft.com',
+    'apple.com', 'amazon.com', 'paypal.com'
+]
+
 app = Flask(__name__)
-CORS(app)  # allow React (port 3000/5173) to call this API
+# Universal CORS setup to avoid fetch block
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "model", "model.pkl")
 model = None
 
-# Basic keyword list for the email scanner skeleton.
-# TODO (future feature): replace with a proper NLP/ML-based classifier.
-PHISHING_KEYWORDS = [
-    "verify your account", "account suspended", "click here immediately",
-    "confirm your password", "urgent action required", "your account has been locked",
-    "update your billing", "unusual login attempt", "claim your prize",
-    "limited time offer", "security alert", "reset your password now",
-]
-
 
 def load_model():
-    """Load the trained model into memory. Called once at startup."""
     global model
     if os.path.exists(MODEL_PATH):
         model = joblib.load(MODEL_PATH)
         print("Model loaded successfully.")
     else:
         model = None
-        print("WARNING: model.pkl not found. Run model/train_model.py first.")
+        print("WARNING: model.pkl not found.")
 
 
-def risk_level(confidence: float) -> str:
-    """Map a phishing-probability score to a human-readable risk label."""
-    if confidence >= 0.75:
-        return "High"
-    elif confidence >= 0.5:
-        return "Medium"
-    elif confidence >= 0.25:
-        return "Low"
-    return "Very Safe"
+def sanitize_and_normalize_url(raw_url: str) -> str:
+    raw_url = raw_url.strip()
+    raw_url = raw_url.replace(",com", ".com").replace(",net", ".net").replace(",org", ".org")
+    raw_url = re.sub(r',([a-zA-Z]{2,10})', r'.\1', raw_url)
+    raw_url = raw_url.rstrip(".,;")
+    raw_url = re.sub(r'[\.,]{2,}', '.', raw_url)
+
+    if not raw_url.startswith(("http://", "https://")):
+        return "https://" + raw_url
+
+    return raw_url
 
 
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok", "model_loaded": model is not None})
+def is_official_domain(domain: str) -> bool:
+    domain_clean = domain.lower()
+    if domain_clean.startswith("www."):
+        domain_clean = domain_clean[4:]
+    elif domain_clean.startswith("m."):
+        domain_clean = domain_clean[2:]
+        
+    return domain_clean in TOP_DOMAINS
 
 
-def run_full_scan(url: str) -> dict:
-    """
-    Run the ML prediction plus the 3 extra basic checks for a single URL.
-    Shared by /scan (one URL) and /scan-bulk (many URLs) so the logic
-    lives in one place.
-    """
-    features = extract_features(url)
+def inspect_dom(normalized_url: str) -> dict:
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        response = requests.get(normalized_url, timeout=2, headers=headers)
+        soup = BeautifulSoup(response.text, "html.parser")
+        
+        domain = urlparse(normalized_url).netloc.lower().replace("www.", "")
+        dom_alerts = []
+        
+        has_password = bool(soup.find("input", {"type": "password"}))
+        official = is_official_domain(domain)
+
+        if has_password and not official:
+            dom_alerts.append("Credential Input Alert: Active password field found on an unverified domain.")
+            
+        page_title = soup.title.string.strip() if soup.title and soup.title.string else ""
+        title_lower = page_title.lower()
+        
+        top_brands = ["microsoft", "google", "paypal", "netflix", "facebook", "apple", "amazon"]
+        for brand in top_brands:
+            if brand in title_lower and brand not in domain:
+                dom_alerts.append(f"Brand Impersonation: Page references '{brand.capitalize()}'.")
+
+        return {
+            "scraped_title": page_title or "N/A",
+            "has_login_form": has_password,
+            "dom_alerts": dom_alerts
+        }
+    except Exception:
+        return {
+            "scraped_title": "Unable to inspect (Offline or unreachable)",
+            "has_login_form": False,
+            "dom_alerts": []
+        }
+
+
+def run_full_scan(raw_url: str) -> dict:
+    normalized_url = sanitize_and_normalize_url(raw_url)
+    
+    features = extract_features(normalized_url)
     vector = [features_to_vector(features)]
 
-    prediction = model.predict(vector)[0]                # 0 = safe, 1 = phishing
-    probability = model.predict_proba(vector)[0][1]       # probability of phishing
+    ml_prediction = bool(model.predict(vector)[0]) if model else False
+    ml_phishing_prob = float(model.predict_proba(vector)[0][1]) if model else 0.0
 
-    domain = urlparse(url if "://" in url else "http://" + url).netloc.split(":")[0]
+    domain = urlparse(normalized_url).netloc.split(":")[0].lower()
+
+    domain_age_res = check_domain_age(domain)
+    ssl_res = check_ssl_certificate(domain)
+    typo_res = check_typosquatting(normalized_url)
+    dom_res = inspect_dom(normalized_url)
+
+    whitelisted = is_official_domain(domain)
+
+    suspicious_keywords = ["account", "login", "signin", "verify", "secure", "update", "banking", "auth", "security"]
+    has_brand_keyword_impersonation = False
+
+    if not whitelisted:
+        for brand in ["google", "facebook", "paypal", "microsoft", "apple", "amazon"]:
+            if brand in domain:
+                for kw in suspicious_keywords:
+                    if kw in domain or kw in raw_url.lower():
+                        has_brand_keyword_impersonation = True
+                        break
+
+    if whitelisted:
+        is_phishing = False
+        confidence = 99.0
+        risk = "Very Safe"
+    else:
+        risk_score = ml_phishing_prob * 0.35
+
+        if dom_res.get("dom_alerts"):
+            risk_score += 0.25
+
+        is_typosquat = typo_res.get("is_typosquat", False)
+        if is_typosquat or has_brand_keyword_impersonation:
+            risk_score += 0.40
+
+        if not ssl_res.get("valid", True):
+            risk_score += 0.15
+
+        if domain_age_res.get("suspicious", False) or domain_age_res.get("days") is None:
+            risk_score += 0.10
+
+        is_phishing = (risk_score >= 0.35) or is_typosquat or has_brand_keyword_impersonation
+        
+        computed_conf = risk_score * 100
+        if (is_typosquat or has_brand_keyword_impersonation) and computed_conf < 75.0:
+            computed_conf = 82.0
+
+        confidence = round(min(max(computed_conf, 15.0), 99.0), 1)
+
+        if confidence >= 70.0:
+            risk = "High"
+        elif confidence >= 45.0:
+            risk = "Medium"
+        elif confidence >= 25.0:
+            risk = "Low"
+        else:
+            risk = "Very Safe"
 
     return {
-        "url": url,
-        "is_phishing": bool(prediction),
-        "confidence": round(float(probability) * 100, 2),
-        "risk_level": risk_level(probability),
+        "url": normalized_url,
+        "is_phishing": is_phishing,
+        "confidence": confidence,
+        "risk_level": risk,
         "features": features,
-        # ---- Basic extra checks (FYP-I level — simple, not exhaustive) ----
-        "domain_age": check_domain_age(domain),
-        "ssl_certificate": check_ssl_certificate(domain),
-        "typosquatting": check_typosquatting(url),
-        # --------------------------------------------------------------
-        # FUTURE FEATURE HOOKS for FYP-II, e.g.:
-        #   "virustotal": check_virustotal(url),
-        # --------------------------------------------------------------
+        "domain_age": domain_age_res,
+        "ssl_certificate": ssl_res,
+        "typosquatting": typo_res,
+        "dom_inspection": dom_res
     }
 
 
-@app.route("/scan", methods=["POST"])
+# Single URL Scan Route
+@app.route("/scan", methods=["POST", "OPTIONS"])
+@app.route("/api/scan", methods=["POST", "OPTIONS"])
 def scan_url():
+    if request.method == "OPTIONS":
+        return "", 200
+        
     data = request.get_json(silent=True) or {}
     url = data.get("url", "").strip()
 
     if not url:
         return jsonify({"error": "Please provide a 'url' field."}), 400
 
-    if model is None:
-        return jsonify({"error": "Model not loaded. Train the model first."}), 503
-
-    result = run_full_scan(url)
-    return jsonify(result)
+    return jsonify(run_full_scan(url))
 
 
-@app.route("/scan-bulk", methods=["POST"])
-def scan_bulk():
-    """
-    Basic bulk scanner: accepts a list of URLs and returns the same
-    result shape as /scan for each one.
-    Body: { "urls": ["http://a.com", "http://b.com", ...] }
-    """
+# Catch-All Bulk Scan Endpoints for Any Frontend Naming
+@app.route("/bulk-scan", methods=["POST", "OPTIONS"])
+@app.route("/bulk", methods=["POST", "OPTIONS"])
+@app.route("/scan-bulk", methods=["POST", "OPTIONS"])
+@app.route("/api/bulk-scan", methods=["POST", "OPTIONS"])
+@app.route("/api/bulk", methods=["POST", "OPTIONS"])
+def bulk_scan():
+    if request.method == "OPTIONS":
+        return "", 200
+
     data = request.get_json(silent=True) or {}
-    urls = data.get("urls", [])
+    
+    # Accept 'urls', 'url_list', or 'data' formats
+    urls = data.get("urls") or data.get("url_list") or data.get("data") or []
 
-    if not isinstance(urls, list) or not urls:
-        return jsonify({"error": "Please provide a non-empty 'urls' list."}), 400
+    if isinstance(urls, str):
+        urls = [u.strip() for u in urls.split("\n") if u.strip()]
 
-    if model is None:
-        return jsonify({"error": "Model not loaded. Train the model first."}), 503
+    if not urls:
+        return jsonify({"error": "Please provide a list of URLs."}), 400
 
-    # Basic cap so a demo can't accidentally submit thousands of URLs at once
-    urls = [u.strip() for u in urls if u.strip()][:25]
-
-    results = []
-    for url in urls:
-        try:
-            results.append(run_full_scan(url))
-        except Exception as e:
-            results.append({"url": url, "error": str(e)})
-
-    return jsonify({"count": len(results), "results": results})
-
-
-@app.route("/scan-email", methods=["POST"])
-def scan_email():
-    data = request.get_json(silent=True) or {}
-    email_text = data.get("email_text", "").strip()
-
-    if not email_text:
-        return jsonify({"error": "Please provide an 'email_text' field."}), 400
-
-    text_lower = email_text.lower()
-    matched = [kw for kw in PHISHING_KEYWORDS if kw in text_lower]
-
-    # Very simple scoring for the skeleton — refine later with a trained model
-    score = min(len(matched) / 3, 1.0)
-    is_phishing = score >= 0.34
-
-    result = {
-        "is_phishing": is_phishing,
-        "confidence": round(score * 100, 2),
-        "risk_level": risk_level(score),
-        "matched_keywords": matched,
-    }
-    return jsonify(result)
+    results = [run_full_scan(u) for u in urls[:25]]
+    
+    # Return both list formats in case frontend expects an array or object
+    return jsonify({"results": results, "data": results, "total": len(results)})
 
 
 if __name__ == "__main__":
     load_model()
-    app.run(debug=True, port=5000)
+    app.run(debug=True, host="0.0.0.0", port=5000)
