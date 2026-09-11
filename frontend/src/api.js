@@ -1,6 +1,6 @@
 // Central place for all backend calls.
 // Change BASE_URL here if you deploy the Flask API somewhere else.
-const BASE_URL = "http://localhost:5000";
+const BASE_URL = https://phishing-detector-v2-l6fp.onrender.com;
 
 export async function scanUrl(url) {
   const res = await fetch(`${BASE_URL}/scan`, {
