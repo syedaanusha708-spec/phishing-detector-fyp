@@ -103,6 +103,21 @@ def inspect_dom(normalized_url: str) -> dict:
 
 def run_full_scan(raw_url: str) -> dict:
     normalized_url = sanitize_and_normalize_url(raw_url)
+    parsed_netloc = urlparse(normalized_url).netloc
+
+    # Smart Check for Malformed / Fake Domain structures (like @ symbols or invalid extensions)
+    if "@" in raw_url or not re.search(r'\.[a-zA-Z]{2,}$', parsed_netloc):
+        return {
+            "url": normalized_url,
+            "is_phishing": True,
+            "confidence": 95.0,
+            "risk_level": "High",
+            "features": {},
+            "domain_age": {"suspicious": True, "days": None},
+            "ssl_certificate": {"valid": False},
+            "typosquatting": {"is_typosquat": True},
+            "dom_inspection": {"scraped_title": "Malformed URL", "has_login_form": False, "dom_alerts": ["Malformed or Suspicious URL Structure Detected"]}
+        }
     
     features = extract_features(normalized_url)
     vector = [features_to_vector(features)]
@@ -110,7 +125,7 @@ def run_full_scan(raw_url: str) -> dict:
     ml_prediction = bool(model.predict(vector)[0]) if model else False
     ml_phishing_prob = float(model.predict_proba(vector)[0][1]) if model else 0.0
 
-    domain = urlparse(normalized_url).netloc.split(":")[0].lower()
+    domain = parsed_netloc.split(":")[0].lower()
 
     domain_age_res = check_domain_age(domain)
     ssl_res = check_ssl_certificate(domain)
