@@ -180,6 +180,12 @@ def run_full_scan(raw_url: str) -> dict:
     }
 
 
+# Home Route for Render URL
+@app.route('/')
+def home():
+    return "Phishing Detector API is running!"
+
+
 # Single URL Scan Route
 @app.route("/scan", methods=["POST", "OPTIONS"])
 @app.route("/api/scan", methods=["POST", "OPTIONS"])
