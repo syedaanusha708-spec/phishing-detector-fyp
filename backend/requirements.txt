@@ -1,7 +1,7 @@
 flask==3.0.3
 flask-cors==4.0.1
-scikit-learn==1.5.1
-pandas==2.2.2
+scikit-learn
+pandas
 joblib==1.4.2
 python-whois==0.9.4
 requests==2.31.0
